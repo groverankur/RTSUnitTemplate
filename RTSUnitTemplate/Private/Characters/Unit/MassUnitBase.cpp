@@ -623,8 +623,18 @@ bool AMassUnitBase::SwitchEntityTagByState(TEnumAsByte<UnitData::EState> UState,
 	        break;
 	
 	    default:
-	        UE_LOG(LogTemp, Warning, TEXT("AMassUnitBase (%s): Unknown UnitState."), *GetName());
-	        return false; // Or handle error appropriately
+	        // Unhandled UnitState -> add a safe Idle instead of returning with every state tag removed.
+	        // The remove-all block above already deferred-removed all state tags; returning here (as it
+	        // used to) would leave the entity with ZERO state tags -> invisible to all state processors
+	        // and frozen animation. Fall back to Idle so it stays in the pipeline.
+	        UE_LOG(LogTemp, Warning, TEXT("AMassUnitBase (%s): Unhandled UnitState -> Idle fallback (avoids tagless entity)."), *GetName());
+	        Defer.AddTag<FMassStateIdleTag>(EntityHandle);
+	        if (StateFrag->CanAttack && StateFrag->IsInitialized)
+	        {
+	            Defer.AddTag<FMassStateDetectTag>(EntityHandle);
+	        }
+	        SetUnitState(UnitData::Idle); // correct the actor state we set to the bad UState above
+	        break;
 	}
 		
 
@@ -1139,6 +1149,16 @@ bool AMassUnitBase::SwitchEntityTag(UScriptStruct* TagToAdd)
 	{
 	    SetUnitState(UnitData::ResourceExtraction);
 	    EntityManager->Defer().AddTag<FMassStateResourceExtractionTag>(EntityHandle);
+	}
+	else
+	{
+	    // TagToAdd was not one of the handled state tags (e.g. GoToRepair/Repair/Evasion/Rooted/
+	    // Charging/ContinuousAttack/Patrol). The block above already stripped the common state tags, so
+	    // add a safe Idle fallback instead of leaving the entity tagless (invisible to all state
+	    // processors + frozen animation).
+	    UE_LOG(LogTemp, Warning, TEXT("AMassUnitBase (%s): SwitchEntityTag unhandled tag %s -> Idle fallback."), *GetName(), *GetNameSafe(TagToAdd));
+	    SetUnitState(UnitData::Idle);
+	    EntityManager->Defer().AddTag<FMassStateIdleTag>(EntityHandle);
 	}
 
 	if (IsWorker)

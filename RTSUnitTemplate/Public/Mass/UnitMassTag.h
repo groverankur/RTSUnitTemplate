@@ -1873,35 +1873,46 @@ inline void ApplyReplicatedTagBits(FMassEntityManager& EntityManager, FMassEntit
 		SetTag(UnitTagBits::Patrol,              FMassStatePatrolTag());
 		SetTag(UnitTagBits::Evasion,             FMassStateEvasionTag());
 
-		// Idle Tag Synchronisation: only apply it if the Client doesnt have any StateTag
-		const bool bServerIdle = (Bits & UnitTagBits::Idle) != 0;
-		const bool bClientHasIdle = DoesEntityHaveTag(EntityManager, Entity, FMassStateIdleTag::StaticStruct());
+		// ---- Zero-state-tag backstop (client) --------------------------------------------
+		// Chase/Run/Attack (and plain Pause) have NO bit in UnitTagBits (bit budget exhausted;
+		// bits 28-31 are Slot_*). So when the server enters one of those, every SetTag above only
+		// REMOVES the prior state tag and none adds a replacement -> the client entity ends up with
+		// ZERO FMassState* tags -> invisible to every state processor + frozen animation (this is the
+		// reported freeze). Decide purely from Bits (order-independent, cannot be defeated by a
+		// not-yet-flushed removal): if the server reports NONE of the bit-backed state tags, the unit
+		// is in an un-replicated locomotion/combat state -> guarantee a neutral, pipeline-visible Idle.
+		// A replicated FRunAnimationTag still wins in ComputeState, preserving the real moving anim.
+		// NOTE: UnitTagBits::Pause is deliberately NOT in this mask: it carries a bit but has no SetTag
+		// above (no FMassStatePauseTag is applied by replication), so treat Pause like Chase/Attack and
+		// let the unit read Idle instead of churning Idle on/off every frame.
+		static constexpr uint32 ReplicatedStateMask =
+			UnitTagBits::Dead | UnitTagBits::Rooted | UnitTagBits::Casting | UnitTagBits::Charging |
+			UnitTagBits::IsAttacked | UnitTagBits::Idle | UnitTagBits::ContinuousAttack |
+			UnitTagBits::Build | UnitTagBits::ResourceExtraction | UnitTagBits::GoToResource |
+			UnitTagBits::GoToBuild | UnitTagBits::GoToBase | UnitTagBits::GoToRepair | UnitTagBits::Repair |
+			UnitTagBits::PatrolIdle | UnitTagBits::PatrolRandom | UnitTagBits::Patrol |
+			UnitTagBits::Evasion;
 
-		if (bServerIdle && !bClientHasIdle)
+		if ((Bits & ReplicatedStateMask) == 0)
 		{
-			const bool bHasAnyStateTag = DoesEntityHaveTag(EntityManager, Entity, FMassStateIdleTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStatePauseTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStateAttackTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStateRunTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStateChaseTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStatePatrolIdleTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStatePatrolRandomTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStatePatrolTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStateBuildTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStateResourceExtractionTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStateGoToResourceExtractionTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStateGoToBuildTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStateGoToBaseTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStateGoToRepairTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStateRepairTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStateIsAttackedTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStateCastingTag::StaticStruct()) ||
-										DoesEntityHaveTag(EntityManager, Entity, FMassStateDeadTag::StaticStruct());
-
-			if (!bHasAnyStateTag)
+			// Respect a client-injected, bit-less state (move-order Run at CustomControllerBase.cpp,
+			// local Chase/Attack) and any Idle we already parked; else add a neutral Idle so the entity
+			// re-enters the state-processor pipeline instead of being frozen with no tag.
+			const bool bAlreadyStable =
+				DoesEntityHaveTag(EntityManager, Entity, FMassStateRunTag::StaticStruct())   ||
+				DoesEntityHaveTag(EntityManager, Entity, FMassStateChaseTag::StaticStruct())  ||
+				DoesEntityHaveTag(EntityManager, Entity, FMassStateAttackTag::StaticStruct()) ||
+				DoesEntityHaveTag(EntityManager, Entity, FMassStateIdleTag::StaticStruct());
+			if (!bAlreadyStable && !bPredicting)
 			{
 				EntityManager.Defer().AddTag<FMassStateIdleTag>(Entity);
 			}
+		}
+		else if (!bPredicting)
+		{
+			// Server reports a real bit-backed state -> drive Idle from its own bit, clearing any Idle
+			// we parked during an un-replicated window (prevents Idle sticking / accumulation).
+			SetTag(UnitTagBits::Idle, FMassStateIdleTag());
 		}
 
 		// Latency kick for Pause state: Nur den Timer setzen, wenn der Server Pause meldet und der Client bereits lokal in Pause ist
