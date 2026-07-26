@@ -729,6 +729,88 @@ void AHUDBase::SetExtensionPreviewLine(FVector Start, FVector End, FColor Color,
 	ExtensionPreviewLine.bIsActive = true;
 }
 
+void AHUDBase::DrawMaterialBar(const FVector2D& Pos, const FVector2D& Size, float FillPct, const FLinearColor& FillColor, bool bVertical)
+{
+	if (!Canvas || !BarMaterial) return;
+
+	// Fill fraction packed into vertex alpha, tint in rgb -> one shared material means all bars batch.
+	FLinearColor C = FillColor;
+	C.A = FMath::Clamp(FillPct, 0.f, 1.f);
+
+	const FVector2D TL = Pos;
+	const FVector2D TR = Pos + FVector2D(Size.X, 0.f);
+	const FVector2D BR = Pos + FVector2D(Size.X, Size.Y);
+	const FVector2D BL = Pos + FVector2D(0.f, Size.Y);
+
+	// UV.x = position along the fill axis (0 = empty origin, 1 = full end); UV.y = across the bar (0..1).
+	FVector2D UvTL, UvTR, UvBR, UvBL;
+	if (!bVertical)
+	{
+		// Horizontal bar: fill left -> right.
+		UvTL = FVector2D(0.f, 0.f); UvTR = FVector2D(1.f, 0.f);
+		UvBR = FVector2D(1.f, 1.f); UvBL = FVector2D(0.f, 1.f);
+	}
+	else
+	{
+		// Vertical bracket: fill bottom(maxY) -> top(minY). Top verts = full end (1), bottom = empty (0).
+		UvTL = FVector2D(1.f, 0.f); UvTR = FVector2D(1.f, 1.f);
+		UvBR = FVector2D(0.f, 1.f); UvBL = FVector2D(0.f, 0.f);
+	}
+
+	FCanvasUVTri T0;
+	T0.V0_Pos = TL; T0.V0_UV = UvTL; T0.V0_Color = C;
+	T0.V1_Pos = TR; T0.V1_UV = UvTR; T0.V1_Color = C;
+	T0.V2_Pos = BR; T0.V2_UV = UvBR; T0.V2_Color = C;
+
+	FCanvasUVTri T1;
+	T1.V0_Pos = TL; T1.V0_UV = UvTL; T1.V0_Color = C;
+	T1.V1_Pos = BR; T1.V1_UV = UvBR; T1.V1_Color = C;
+	T1.V2_Pos = BL; T1.V2_UV = UvBL; T1.V2_Color = C;
+
+	TArray<FCanvasUVTri> Tris;
+	Tris.Reserve(2);
+	Tris.Add(T0);
+	Tris.Add(T1);
+
+	FCanvasTriangleItem TriItem(Tris, (const FTexture*)nullptr);
+	TriItem.MaterialRenderProxy = BarMaterial->GetRenderProxy();
+	TriItem.BlendMode = SE_BLEND_Translucent;
+	Canvas->DrawItem(TriItem);
+}
+
+// Appends one material-textured band quad (2 tris) between two polyline points to Out.
+// The band is centred on the P0->P1 line, half-width scaled per-vertex by alpha so it thins
+// out on the occlusion fade exactly like the old thickness*alpha line did. Alpha is also
+// folded into vertex-colour A so the material can fade it. UV.x runs along the strip (U0..U1),
+// UV.y crosses the band (0 = inner edge, 1 = outer edge).
+static void AppendBandQuad(TArray<FCanvasUVTri>& Out, const FVector2D& P0, const FVector2D& P1,
+	float A0, float A1, float U0, float U1, float HalfThick, const FLinearColor& Tint)
+{
+	FVector2D Dir = P1 - P0;
+	if (Dir.SizeSquared() < KINDA_SMALL_NUMBER) return;
+	Dir.Normalize();
+	const FVector2D N(-Dir.Y, Dir.X);
+	const FVector2D O0 = N * (HalfThick * FMath::Max(A0, 0.05f));
+	const FVector2D O1 = N * (HalfThick * FMath::Max(A1, 0.05f));
+
+	FLinearColor C0 = Tint; C0.A *= A0;
+	FLinearColor C1 = Tint; C1.A *= A1;
+
+	const FVector2D P0i = P0 - O0, P0o = P0 + O0;
+	const FVector2D P1i = P1 - O1, P1o = P1 + O1;
+
+	FCanvasUVTri T0;
+	T0.V0_Pos = P0i; T0.V0_UV = FVector2D(U0, 0.f); T0.V0_Color = C0;
+	T0.V1_Pos = P1i; T0.V1_UV = FVector2D(U1, 0.f); T0.V1_Color = C1;
+	T0.V2_Pos = P1o; T0.V2_UV = FVector2D(U1, 1.f); T0.V2_Color = C1;
+	FCanvasUVTri T1;
+	T1.V0_Pos = P0i; T1.V0_UV = FVector2D(U0, 0.f); T1.V0_Color = C0;
+	T1.V1_Pos = P1o; T1.V1_UV = FVector2D(U1, 1.f); T1.V1_Color = C1;
+	T1.V2_Pos = P0o; T1.V2_UV = FVector2D(U0, 1.f); T1.V2_Color = C0;
+	Out.Add(T0);
+	Out.Add(T1);
+}
+
 void AHUDBase::DrawSelectionIndicator(AUnitBase* Unit, const FVector& Location, float RadiusX, float RadiusY, const FRotator& Rotation, const FSelectionSettings& Settings, bool bDisableOcclusionOverride, int32 InSegments)
 {
 	APlayerController* PC = GetOwningPlayerController();
@@ -749,6 +831,13 @@ void AHUDBase::DrawSelectionIndicator(AUnitBase* Unit, const FVector& Location, 
 	// --- OPTIMIERUNG: Size Culling ---
 	// Wenn der Kreis kleiner als ein paar Pixel ist, abbrechen
 	if (VecX.SizeSquared() < 16.f && VecY.SizeSquared() < 16.f) return;
+
+	// Material selection: the SAME shape/occlusion/rotation geometry below is emitted as a
+	// material-textured band (accumulated into SelTris, drawn once) instead of flat lines. All
+	// Style / Thickness / occlusion-fade settings are preserved; the material only skins it.
+	const bool bUseSelMaterial = (Settings.SelectionMaterial != nullptr);
+	TArray<FCanvasUVTri> SelTris;
+	const float SelHalfThick = Settings.Thickness * 0.5f;
 
 	// 2. Occlusion-Vorbereitung
 	float CamAngleRad = 0.f;
@@ -828,17 +917,28 @@ void AHUDBase::DrawSelectionIndicator(AUnitBase* Unit, const FVector& Location, 
 
 		// 6. Zeichnen mit gemitteltem Alpha/Thickness
 		if (bPrevValid && (AlphaMult > 0.001f || PrevAlphaMult > 0.001f)) {
-			float AvgAlpha = (AlphaMult + PrevAlphaMult) * 0.5f;
-			FCanvasLineItem LineItem(PrevPoint, ScreenPoint);
-			LineItem.LineThickness = Settings.Thickness * AvgAlpha;
-			FLinearColor LineColor = Settings.Color;
-			LineColor.A *= AvgAlpha;
-			LineItem.SetColor(LineColor);
-			LineItem.BlendMode = SE_BLEND_Translucent;
-			Canvas->DrawItem(LineItem);
+			if (bUseSelMaterial)
+			{
+				// Same segment, emitted as a material band. Per-vertex alpha carries the occlusion
+				// fade so the band thins + fades out cleanly, identical to the flat-line behaviour.
+				const float U0 = (Segments > 0) ? (float)(i - 1) / (float)Segments : 0.f;
+				const float U1 = (Segments > 0) ? (float)i / (float)Segments : 1.f;
+				AppendBandQuad(SelTris, PrevPoint, ScreenPoint, PrevAlphaMult, AlphaMult, U0, U1, SelHalfThick, FLinearColor(Settings.Color));
+			}
+			else
+			{
+				float AvgAlpha = (AlphaMult + PrevAlphaMult) * 0.5f;
+				FCanvasLineItem LineItem(PrevPoint, ScreenPoint);
+				LineItem.LineThickness = Settings.Thickness * AvgAlpha;
+				FLinearColor LineColor = Settings.Color;
+				LineColor.A *= AvgAlpha;
+				LineItem.SetColor(LineColor);
+				LineItem.BlendMode = SE_BLEND_Translucent;
+				Canvas->DrawItem(LineItem);
+			}
 		}
-		
-		PrevPoint = ScreenPoint; 
+
+		PrevPoint = ScreenPoint;
 		PrevAlphaMult = AlphaMult;
 		bPrevValid = true;
 
@@ -847,6 +947,15 @@ void AHUDBase::DrawSelectionIndicator(AUnitBase* Unit, const FVector& Location, 
 		float NextSin = SinCurrent * CosStep + CosCurrent * SinStep;
 		CosCurrent = NextCos;
 		SinCurrent = NextSin;
+	}
+
+	// One batched material draw for the whole ring/octagon/arc (shared proxy -> batches across units).
+	if (bUseSelMaterial && SelTris.Num() > 0)
+	{
+		FCanvasTriangleItem SelItem(SelTris, (const FTexture*)nullptr);
+		SelItem.MaterialRenderProxy = Settings.SelectionMaterial->GetRenderProxy();
+		SelItem.BlendMode = SE_BLEND_Translucent;
+		Canvas->DrawItem(SelItem);
 	}
 }
 
@@ -1717,6 +1826,8 @@ void AHUDBase::DrawStackedHealthBar(AUnitBase* Unit, const FVector& BaseLoc, con
 		BackgroundItem.BlendMode = SE_BLEND_Translucent;
 		Canvas->DrawItem(BackgroundItem);
 
+		// Shared-material fill. Outline + BG above are kept; the Segments look is preserved by
+		// routing each filled segment tile through the material (Segments==0 -> one continuous quad).
 		if (Settings.Segments > 0)
 		{
 			float TotalSize = ProjectedSize;
@@ -1731,10 +1842,21 @@ void AHUDBase::DrawStackedHealthBar(AUnitBase* Unit, const FVector& BaseLoc, con
 				FVector2D SegPos = InPos + FVector2D(i * SegSize, 0);
 				FVector2D SegDim = FVector2D(FMath::Max(1.0f, SegSize - CurrentGap), Thickness);
 
-				FCanvasTileItem SegItem(SegPos, SegDim, FLinearColor(Color));
-				SegItem.BlendMode = SE_BLEND_Translucent;
-				Canvas->DrawItem(SegItem);
+				if (BarMaterial)
+				{
+					DrawMaterialBar(SegPos, SegDim, 1.0f, FLinearColor(Color), false);
+				}
+				else
+				{
+					FCanvasTileItem SegItem(SegPos, SegDim, FLinearColor(Color));
+					SegItem.BlendMode = SE_BLEND_Translucent;
+					Canvas->DrawItem(SegItem);
+				}
 			}
+		}
+		else if (BarMaterial)
+		{
+			DrawMaterialBar(InPos, FVector2D(ProjectedSize, Thickness), Pct, FLinearColor(Color), false);
 		}
 		else
 		{
@@ -1866,6 +1988,9 @@ void AHUDBase::DrawSemiCircleHealthBar(AUnitBase* Unit, const FVector& BaseLoc, 
 
 			// Gefüllte Segmente
 			int32 FilledSegs = FMath::CeilToInt(Segments * Pct);
+			const bool bArcMaterial = (BarMaterial != nullptr);
+			TArray<FCanvasUVTri> ArcTris;
+			const float ArcHalfThick = Thickness * 0.5f;
 			for (int32 s = 0; s < FilledSegs; ++s)
 			{
 				const float A0 = StartAngleRad + s * SegAngle;
@@ -1874,10 +1999,26 @@ void AHUDBase::DrawSemiCircleHealthBar(AUnitBase* Unit, const FVector& BaseLoc, 
 				const FVector2D P0 = ScreenPos + EX * FMath::Cos(A0) + EY * FMath::Sin(A0);
 				const FVector2D P1 = ScreenPos + EX * FMath::Cos(A1) + EY * FMath::Sin(A1);
 
-				FCanvasLineItem LineItem(P0, P1);
-				LineItem.LineThickness = Thickness;
-				LineItem.SetColor(FLinearColor(Color));
-				Canvas->DrawItem(LineItem);
+				if (bArcMaterial)
+				{
+					const float U0 = (Segments > 0) ? (float)s / (float)Segments : 0.f;
+					const float U1 = (Segments > 0) ? (float)(s + 1) / (float)Segments : 1.f;
+					AppendBandQuad(ArcTris, P0, P1, 1.f, 1.f, U0, U1, ArcHalfThick, FLinearColor(Color));
+				}
+				else
+				{
+					FCanvasLineItem LineItem(P0, P1);
+					LineItem.LineThickness = Thickness;
+					LineItem.SetColor(FLinearColor(Color));
+					Canvas->DrawItem(LineItem);
+				}
+			}
+			if (bArcMaterial && ArcTris.Num() > 0)
+			{
+				FCanvasTriangleItem ArcItem(ArcTris, (const FTexture*)nullptr);
+				ArcItem.MaterialRenderProxy = BarMaterial->GetRenderProxy();
+				ArcItem.BlendMode = SE_BLEND_Translucent;
+				Canvas->DrawItem(ArcItem);
 			}
 		};
 
@@ -1971,6 +2112,7 @@ void AHUDBase::DrawSideBracketsHealthBar(AUnitBase* Unit, const FVector& BaseLoc
 		BackgroundItem.BlendMode = SE_BLEND_Translucent;
 		Canvas->DrawItem(BackgroundItem);
 
+		// Shared-material fill (vertical). Outline + BG above are kept; Segments look preserved.
 		if (Settings.Segments > 0)
 		{
 			float SegHeight = BracketHeight / Settings.Segments;
@@ -1983,11 +2125,22 @@ void AHUDBase::DrawSideBracketsHealthBar(AUnitBase* Unit, const FVector& BaseLoc
 				float CurrentGap = (i == 0) ? 0.f : ScaledSpace;
 				FVector2D SegPos = Top + FVector2D(0, BracketHeight - (i + 1) * SegHeight);
 				FVector2D SegDim = FVector2D(Thickness, FMath::Max(1.0f, SegHeight - CurrentGap));
-				
-				FCanvasTileItem SegItem(SegPos, SegDim, FLinearColor(Color));
-				SegItem.BlendMode = SE_BLEND_Translucent;
-				Canvas->DrawItem(SegItem);
+
+				if (BarMaterial)
+				{
+					DrawMaterialBar(SegPos, SegDim, 1.0f, FLinearColor(Color), true);
+				}
+				else
+				{
+					FCanvasTileItem SegItem(SegPos, SegDim, FLinearColor(Color));
+					SegItem.BlendMode = SE_BLEND_Translucent;
+					Canvas->DrawItem(SegItem);
+				}
 			}
+		}
+		else if (BarMaterial)
+		{
+			DrawMaterialBar(Top, FVector2D(Thickness, BracketHeight), Pct, FLinearColor(Color), true);
 		}
 		else
 		{

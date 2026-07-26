@@ -137,6 +137,13 @@ struct FSelectionSettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Selection")
 	float RotatingSpeed = 120.0f;
+
+	/** Optional UI-domain material for the selection indicator. When set, the SAME shape as Style (Circle,
+	 *  Octagon, RotatingPartialCircle, ...) is emitted as a material-textured band that follows the full
+	 *  camera-angle occlusion fade + rotation + Thickness -- the material only skins the line. Tinted by
+	 *  Color (occlusion fade in vertex alpha). Leave null for the classic flat-line shape. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Selection")
+	TObjectPtr<UMaterialInterface> SelectionMaterial = nullptr;
 };
 
 UENUM(BlueprintType)
@@ -256,7 +263,7 @@ public:
 	bool bEnableHealthBars = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTS|HUD|Health")
-	bool bShowAllHealthBarsPermanent = false;
+	bool bShowAllHealthBarsPermanent = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTS|HUD|Health")
 	UFont* LevelFont;
@@ -491,6 +498,19 @@ public:
 
 	// Draws a translucent vertical quad ("wall") between Start and End up to Height, via Material, tinted Color.
 	void DrawMaterialWall(const FVector& Start, const FVector& End, float Height, class UMaterialInterface* Material, const FLinearColor& Color);
+
+	// ---- Bar (health/shield/mana/movement) material rendering ----------------------------------------
+	/** Single shared UI-domain material for ALL stat bars (health/shield/mana/movement) across all unit
+	 *  types. When set, each bar's FILL is drawn via the material (fill fraction in vertex alpha, tint in
+	 *  vertex rgb) instead of flat tiles -> one shared material batches into ~1 draw call. ALL FHealthBarSettings
+	 *  are preserved: Segments still render as discrete material tiles, Outline/Background/Level are untouched.
+	 *  Leave null for the classic flat-tile fill. Applies to Stacked, SideBrackets and SemiCircle styles. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTS|HUD|Bars")
+	TObjectPtr<UMaterialInterface> BarMaterial = nullptr;
+
+	// Draws one stat-bar FILL as a material quad. FillPct -> vertex alpha, FillColor -> vertex rgb;
+	// UV.x = position along the fill axis (0..1), UV.y across the bar. bVertical fills bottom->top.
+	void DrawMaterialBar(const FVector2D& Pos, const FVector2D& Size, float FillPct, const FLinearColor& FillColor, bool bVertical);
 
 	void DrawDashedLine3D(const FVector& Start, const FVector& End, float DashLen, float GapLen, FColor Color, float Thickness, float ZOffset);
 
