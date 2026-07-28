@@ -57,6 +57,14 @@ public:
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	UNiagaraSystem* DeadVFX;
 
+	/** Optional pool of additional death VFX. When non-empty, ONE entry is picked at random per
+	 *  death; the single DeadVFX above is added to that pool (so it still fires and no existing
+	 *  assignment needs redoing). All entries share ScaleDeadVFX / DelayDeadVFX / DeadSound below.
+	 *  Purely cosmetic, so each machine picks its own (host and clients may show different ones).
+	 *  Leave empty to keep the classic single-DeadVFX behaviour. */
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	TArray<UNiagaraSystem*> DeadVFXArray;
+
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	FVector ScaleDeadVFX = FVector(1.f, 1.f,1.f);
 	

@@ -19,6 +19,9 @@ class USoundBase;
 class AUnitBase;
 class AAbilityIndicator;
 class UGameplayAbilityBase;
+class URTSMouseCursorWidget;
+class UMaterialInterface;
+class UTexture2D;
 
 #include "ControllerBase.generated.h"
 
@@ -54,6 +57,40 @@ public:
 	virtual void BeginPlay() override;
 	virtual void SetupInputComponent() override;
 	virtual void GetLifetimeReplicatedProps(TArray< FLifetimeProperty > & OutLifetimeProps) const override;
+
+	// ---- Configurable mouse cursor (Material and/or Icon) --------------------------------------
+	// Pick a custom cursor in any BP controller's Class Defaults: set CursorMaterial (preferred,
+	// needs a UI-domain material) OR CursorIcon (texture). Leave both null to keep the engine
+	// crosshair. A material requires the software-widget path; a texture works either way.
+
+	/** Software cursor widget class used to render the Material/Icon. Defaults to the built-in
+	 *  URTSMouseCursorWidget so no companion asset is needed; point it at a WBP subclass to customize. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Cursor")
+	TSubclassOf<URTSMouseCursorWidget> MouseCursorWidgetClass;
+
+	/** UI-domain material drawn as the cursor. Takes precedence over CursorIcon. Requires the widget path. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Cursor")
+	TObjectPtr<UMaterialInterface> CursorMaterial = nullptr;
+
+	/** Texture drawn as the cursor when no CursorMaterial is set. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Cursor")
+	TObjectPtr<UTexture2D> CursorIcon = nullptr;
+
+	/** Draw size (pixels) of the software cursor image. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Cursor")
+	FVector2D CursorSize = FVector2D(32.f, 32.f);
+
+	/** Cursor slot the widget replaces; kept in sync with DefaultMouseCursor. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Cursor")
+	TEnumAsByte<EMouseCursor::Type> MouseCursorType = EMouseCursor::Crosshairs;
+
+	/** Cached software-cursor widget instance. */
+	UPROPERTY(Transient)
+	TObjectPtr<URTSMouseCursorWidget> MouseCursorWidgetInstance = nullptr;
+
+	/** (Re)applies the configured cursor. Call again after changing the cursor properties at runtime. */
+	UFUNCTION(BlueprintCallable, Category = "RTSUnitTemplate|Cursor")
+	void ApplyCustomMouseCursor();
 
 	UPROPERTY(BlueprintReadWrite, Category = RTSUnitTemplate)
 	AAbilityIndicator* CurrentDraggedAbilityIndicator;

@@ -273,12 +273,11 @@ void AEnergyWall::InitializeWallInternal()
 	BottomRodISM->ClearInstances();
 	ShieldISM->ClearInstances();
 
-	bIsInitializing = true;
 	bIsInitialized = true;
 
 	// Add instance for top rod with 0 scale at its Blueprint position
 	TopRodISM->AddInstance(FTransform(FRotator::ZeroRotator, FVector::ZeroVector, FVector(1.f, 0.f, 1.f)));
-	
+
 	// Add instance for bottom rod with 0 scale at its Blueprint position
 	BottomRodISM->AddInstance(FTransform(FRotator::ZeroRotator, FVector::ZeroVector, FVector(1.f, 0.f, 1.f)));
 
@@ -286,6 +285,18 @@ void AEnergyWall::InitializeWallInternal()
 	ShieldISM->AddInstance(FTransform(FRotator::ZeroRotator, FVector::ZeroVector, FVector(1.f, TargetScaleY, 1.f)));
 	ShieldISM->SetHiddenInGame(true);
 
+	// A wall that replicated in already-deactivated (e.g. to a late-joining client) must stay
+	// collapsed + hidden and NOT play the spawn/inflate animation. The instances above still exist
+	// so a later Multicast_ActivateWall can inflate them normally.
+	if (bIsDeactivated)
+	{
+		bIsInitializing = false;
+		CurrentScaleY = 0.f;
+		UpdateVisibility();
+		return;
+	}
+
+	bIsInitializing = true;
 	GetWorldTimerManager().SetTimer(InitializationTimerHandle, this, &AEnergyWall::OnInitializationTimerComplete, InitializationDuration, false);
 
 	UpdateVisibility();
@@ -633,24 +644,56 @@ void AEnergyWall::OnDeactivationTimerComplete()
 
 void AEnergyWall::StartDespawn(AActor* DestroyedActor)
 {
-	if (bIsDespawning)
+	// A real (active-wall) despawn is already running with its lifespan counting down: don't restart it.
+	if (bIsDespawning && GetLifeSpan() > 0.0f)
 	{
-		if (GetLifeSpan() > 0.0f)
-		{
-			return;
-		}
+		return;
 	}
-	
-	bIsDespawning = true;
-	bIsInitializing = false;
-	GetWorldTimerManager().ClearTimer(InitializationTimerHandle);
 
+	// Stop listening to the (now dying) buildings on every path.
 	if (CachedBuildingA) CachedBuildingA->OnDestroyed.RemoveAll(this);
 	if (CachedBuildingB) CachedBuildingB->OnDestroyed.RemoveAll(this);
 
+	bIsInitializing = false;
+	GetWorldTimerManager().ClearTimer(InitializationTimerHandle);
+
+	// If the wall was already deactivated (rods collapsed to 0, shield hidden), tear it down
+	// SILENTLY. We must NOT set bIsDespawning here: the Tick despawn branch would otherwise reset
+	// CurrentScaleY = TargetScaleY (re-inflating the rods from 0 to full) and flicker the shield
+	// back on -> the reported "deactivated wall reappears / replays a despawn animation on building
+	// death" bug (and on clients, with no lifespan/timer, it would be stuck at full scale until the
+	// replicated actor destroy arrives).
+	if (bIsDeactivated)
+	{
+		bIsDespawning = false;
+		CurrentScaleY = 0.f;
+
+		FTransform InstTransform;
+		if (TopRodISM && TopRodISM->GetInstanceTransform(0, InstTransform))
+		{
+			InstTransform.SetScale3D(FVector(1.f, 0.f, 1.f));
+			TopRodISM->UpdateInstanceTransform(0, InstTransform, false, true, true);
+		}
+		if (BottomRodISM && BottomRodISM->GetInstanceTransform(0, InstTransform))
+		{
+			InstTransform.SetScale3D(FVector(1.f, 0.f, 1.f));
+			BottomRodISM->UpdateInstanceTransform(0, InstTransform, false, true, true);
+		}
+		if (ShieldISM) ShieldISM->SetHiddenInGame(true);
+
+		DeactivateNavigation(); // idempotent; nav is already down for a deactivated wall
+		if (HasAuthority())
+		{
+			SetLifeSpan(DespawnDelay);
+		}
+		return;
+	}
+
+	// Normal active-wall despawn: unchanged shrink/dissolve animation.
+	bIsDespawning = true;
 	ApplyDespawnEffects();
 	DeactivateNavigation();
-	
+
 	if (HasAuthority())
 	{
 		SetLifeSpan(DespawnDelay);

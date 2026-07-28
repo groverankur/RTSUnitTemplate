@@ -38,6 +38,8 @@
 #include "Controller/PlayerController/ExtendedControllerBase.h"
 #include "GAS/GameplayAbilityBase.h"
 #include "Characters/Unit/GASUnit.h"
+#include "Widgets/RTSMouseCursorWidget.h"
+#include "Blueprint/UserWidget.h"
 
 
 AControllerBase::AControllerBase() {
@@ -45,13 +47,53 @@ AControllerBase::AControllerBase() {
 	DefaultMouseCursor = EMouseCursor::Crosshairs;
 	bEnableClickEvents = true;
 	bEnableMouseOverEvents = true;
+
+	// Default to the built-in software cursor widget so a Material/Icon works with no companion asset.
+	MouseCursorWidgetClass = URTSMouseCursorWidget::StaticClass();
+}
+
+void AControllerBase::ApplyCustomMouseCursor()
+{
+	// The cursor is purely local: nothing to do on a dedicated server or for remote proxies.
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	// Keep the active cursor slot in sync with the widget we register.
+	DefaultMouseCursor = MouseCursorType;
+	CurrentMouseCursor = MouseCursorType;
+	bShowMouseCursor = true;
+
+	// Nothing configured -> keep the engine default cursor (crosshair).
+	if (!CursorMaterial && !CursorIcon)
+	{
+		return;
+	}
+
+	if (!MouseCursorWidgetClass)
+	{
+		MouseCursorWidgetClass = URTSMouseCursorWidget::StaticClass();
+	}
+
+	if (!MouseCursorWidgetInstance)
+	{
+		MouseCursorWidgetInstance = CreateWidget<URTSMouseCursorWidget>(this, MouseCursorWidgetClass);
+	}
+	if (MouseCursorWidgetInstance)
+	{
+		MouseCursorWidgetInstance->SetCursorImage(CursorMaterial, CursorIcon, CursorSize);
+		SetMouseCursorWidget(MouseCursorType, MouseCursorWidgetInstance);
+	}
 }
 
 
 void AControllerBase::BeginPlay() {
 
 	Super::BeginPlay();
-	
+
+	ApplyCustomMouseCursor();
+
 	InitCameraHUDGameMode();
 	ToggleUnitCountDisplay(ShowUnitCount);
 	LastRunSoundTime = 0.f;

@@ -280,6 +280,36 @@ public:
 	bool IsSquadHealthbarOwner() const;
 	
 	void OnAttributeChanged(const struct FOnAttributeChangeData& Data);
+
+	// ---- Shield-impact effect (optional, client + server) ---------------------------------------
+	/** When enabled, ShieldImpactMaterial flashes on the mesh whenever incoming damage is absorbed
+	 *  by Shield (i.e. Shield decreases). Purely visual; each machine triggers its own flash because
+	 *  the Shield attribute change fires on both server (GE execute) and client (OnRep). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|ShieldImpact")
+	bool bEnableShieldImpactEffect = false;
+
+	/** Overlay (Surface-domain) material shown on the mesh when Shield absorbs damage. A scalar
+	 *  parameter (ShieldImpactTimeParam) is set to the world hit-time so the material can flash+fade. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|ShieldImpact")
+	TObjectPtr<UMaterialInterface> ShieldImpactMaterial = nullptr;
+
+	/** How long (s) the shield-impact overlay stays before it is removed. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|ShieldImpact")
+	float ShieldImpactDuration = 0.6f;
+
+	/** Scalar parameter set to the hit time (world seconds) so the material drives its own flash/fade. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|ShieldImpact")
+	FName ShieldImpactTimeParam = FName("HitTime");
+
+	/** Flashes the shield-impact overlay now (local/visual only). */
+	UFUNCTION(BlueprintCallable, Category = "RTSUnitTemplate|ShieldImpact")
+	void TriggerShieldImpact();
+
+	UPROPERTY(Transient)
+	TObjectPtr<class UMaterialInstanceDynamic> ShieldImpactMID = nullptr;
+
+	FTimerHandle ShieldImpactTimerHandle;
+	void ClearShieldImpact();
 ///////////////////////////////////////////////////////////////////
 
 

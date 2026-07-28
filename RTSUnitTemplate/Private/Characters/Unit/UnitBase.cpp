@@ -8,6 +8,7 @@
 #include "Actors/Waypoint.h"
 #include "GAS/AttributeSetBase.h"
 #include "AbilitySystemComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "AIController.h"
 #include "NavCollision.h"
 #include "Widgets/UnitBaseHealthBar.h"
@@ -619,7 +620,32 @@ void AUnitBase::DeadMultiCast_Implementation()
 {
 	SetUnitState(UnitData::Dead);
 	SwitchEntityTagByState(UnitData::Dead, UnitData::Dead);
-	FireEffects_Implementation(DeadVFX, DeadSound, ScaleDeadVFX, ScaleDeadSound, DelayDeadVFX, DelayDeadSound, -1);
+
+	// Death VFX pool: DeadVFXArray entries + the legacy single DeadVFX (kept so existing assignments
+	// still fire and need no re-doing). One is picked at random. Empty pool -> null (DeadSound still
+	// plays). Cosmetic only, so the pick is local per machine (A: simple variant).
+	UNiagaraSystem* ChosenDeadVFX = DeadVFX;
+	{
+		TArray<UNiagaraSystem*> Pool;
+		Pool.Reserve(DeadVFXArray.Num() + 1);
+		for (UNiagaraSystem* VFX : DeadVFXArray)
+		{
+			if (VFX)
+			{
+				Pool.Add(VFX);
+			}
+		}
+		if (DeadVFX && !Pool.Contains(DeadVFX))
+		{
+			Pool.Add(DeadVFX);
+		}
+		if (Pool.Num() > 0)
+		{
+			ChosenDeadVFX = Pool[FMath::RandRange(0, Pool.Num() - 1)];
+		}
+	}
+
+	FireEffects_Implementation(ChosenDeadVFX, DeadSound, ScaleDeadVFX, ScaleDeadSound, DelayDeadVFX, DelayDeadSound, -1);
 }
 void AUnitBase::Multicast_SwitchToIdle_Implementation()
 {
@@ -686,6 +712,17 @@ void AUnitBase::OnAttributeChanged(const FOnAttributeChangeData& Data)
 	// 1. Sync local Mass fragment immediately
 	UpdateEntityHealth(Attributes->GetHealth(), Attributes->GetShield());
 
+	// 1b. Shield-impact flash: incoming damage was absorbed by Shield (Shield went DOWN). Fires on
+	// server (GE execute) AND client (OnRep_Shield -> attribute-change delegate), so the visual runs
+	// on every machine that renders the unit. Optional per unit.
+	if (bEnableShieldImpactEffect && ShieldImpactMaterial &&
+		Data.Attribute == UAttributeSetBase::GetShieldAttribute() &&
+		Data.OldValue > KINDA_SMALL_NUMBER &&
+		Data.NewValue < Data.OldValue - KINDA_SMALL_NUMBER)
+	{
+		TriggerShieldImpact();
+	}
+
 	// 2. Immediate UI Reaction (The "Signal")
 	// Only trigger popup if it's not the initial sync (OldValue > 0)
 	if (Data.OldValue > 0.5f)
@@ -706,6 +743,38 @@ void AUnitBase::OnAttributeChanged(const FOnAttributeChangeData& Data)
 	else
 	{
 		UpdateWidget();
+	}
+}
+
+void AUnitBase::TriggerShieldImpact()
+{
+	if (!ShieldImpactMaterial) return;
+	// Purely a rendered effect: skip on a dedicated server (nothing is drawn there).
+	if (GetNetMode() == NM_DedicatedServer) return;
+
+	USkeletalMeshComponent* MeshComp = GetMesh();
+	if (!MeshComp) return;
+
+	if (!ShieldImpactMID)
+	{
+		ShieldImpactMID = UMaterialInstanceDynamic::Create(ShieldImpactMaterial, this);
+	}
+	if (!ShieldImpactMID) return;
+
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+	ShieldImpactMID->SetScalarParameterValue(ShieldImpactTimeParam, Now);
+
+	// Overlay pass on the mesh; removed again after the flash so idle units pay nothing.
+	MeshComp->SetOverlayMaterial(ShieldImpactMID);
+	GetWorldTimerManager().SetTimer(ShieldImpactTimerHandle, this, &AUnitBase::ClearShieldImpact,
+		FMath::Max(ShieldImpactDuration, 0.05f), false);
+}
+
+void AUnitBase::ClearShieldImpact()
+{
+	if (USkeletalMeshComponent* MeshComp = GetMesh())
+	{
+		MeshComp->SetOverlayMaterial(nullptr);
 	}
 }
 
