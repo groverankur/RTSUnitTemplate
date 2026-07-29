@@ -117,9 +117,10 @@ void UUnitVisualManager::AssignUnitVisual(FMassEntityHandle Entity, UInstancedSt
 	ISM->SetRenderCustomDepth(TemplateISM->bRenderCustomDepth);
 	ISM->SetCustomDepthStencilValue(TemplateISM->CustomDepthStencilValue);
 	// Never inherit a too-small value from the editor template. The animation processor needs 13
-	// custom-data floats (indices 1..12); clamp up so a misconfigured template can't undersize the
-	// pooled ISM and force a destructive runtime resize later (which would zero all instances).
-	ISM->SetNumCustomDataFloats(FMath::Max(13, TemplateISM->NumCustomDataFloats));
+	// custom-data floats (indices 1..12) and the corpse-dissolve adds index 13, so 14 total; clamp up so
+	// a misconfigured template can't undersize the pooled ISM and force a destructive runtime resize later
+	// (which would zero all instances).
+	ISM->SetNumCustomDataFloats(FMath::Max(14, TemplateISM->NumCustomDataFloats));
 
 	// Map ISM instance to MassUnitBase
 	TArray<TWeakObjectPtr<AMassUnitBase>>& UnitArray = ISMToUnitMap.FindOrAdd(ISM);
@@ -245,7 +246,32 @@ void UUnitVisualManager::SetUnitVisualVisible(FMassEntityHandle Entity, bool bVi
 				}
 			}
 		}
-	} 
+	}
+}
+
+// Custom-data index used by the corpse-dissolve. Animation owns 0..12 (see UnitAnimationProcessor); this is
+// the next free slot. Pooled ISMs are sized to 14 at creation so this index is always valid.
+static constexpr int32 GDissolveCustomDataIndex = 13;
+
+void UUnitVisualManager::SetUnitDissolve(FMassEntityHandle Entity, float Alpha)
+{
+	UMassEntitySubsystem* EntitySubsystem = GetWorld() ? GetWorld()->GetSubsystem<UMassEntitySubsystem>() : nullptr;
+	if (!EntitySubsystem) return;
+
+	FMassEntityManager& EntityManager = EntitySubsystem->GetMutableEntityManager();
+	if (!EntityManager.IsEntityActive(Entity)) return;
+
+	FMassUnitVisualFragment* VisualFrag = EntityManager.GetFragmentDataPtr<FMassUnitVisualFragment>(Entity);
+	if (!VisualFrag) return;
+
+	for (const FMassUnitVisualInstance& Instance : VisualFrag->VisualInstances)
+	{
+		UInstancedStaticMeshComponent* ISM = Instance.TargetISM.Get();
+		if (ISM && Instance.InstanceIndex != INDEX_NONE && ISM->NumCustomDataFloats > GDissolveCustomDataIndex)
+		{
+			ISM->SetCustomDataValue(Instance.InstanceIndex, GDissolveCustomDataIndex, Alpha, true);
+		}
+	}
 }
 
 void UUnitVisualManager::SwapUnitVisualToRuin(FMassEntityHandle Entity, AMassUnitBase* Unit, UStaticMesh* RuinMesh,
@@ -418,9 +444,10 @@ UInstancedStaticMeshComponent* UUnitVisualManager::GetOrCreateISM(UStaticMesh* M
     UInstancedStaticMeshComponent* NewISM = NewObject<UInstancedStaticMeshComponent>(ManagerActor);
     NewISM->SetStaticMesh(Mesh);
     // Pre-size custom data ONCE, before any instance is added (so nothing is wiped). The animation
-    // processor writes custom-data indices 1..12, i.e. it needs 13 floats. Doing this here means it
-    // never has to resize a live, shared ISM at runtime (which would zero EVERY instance's data).
-    NewISM->SetNumCustomDataFloats(13);
+    // processor writes custom-data indices 1..12 (13 floats) and the corpse-dissolve writes index 13,
+    // so 14 total. Doing this here means it never has to resize a live, shared ISM at runtime (which
+    // would zero EVERY instance's data).
+    NewISM->SetNumCustomDataFloats(14);
     if (Material) {
         NewISM->SetMaterial(0, Material);
     }

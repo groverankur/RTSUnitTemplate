@@ -201,6 +201,29 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mass|Ruin", meta = (EditCondition = "bSpawnRuinOnDeath"))
 	bool bRuinCastShadow = true;
 
+	// --- Optional corpse dissolve (works for BOTH skeletal-mesh (SKM) and instanced-static-mesh (ISM) units) ---
+	// OFF unless DissolveMaterial is set. DissolveDuration seconds after death begins at DissolveStartTime, the
+	// dead unit's visual is swapped to DissolveMaterial and a dissolve amount is ramped 0->1 over DissolveDuration,
+	// so the corpse fades away instead of popping out. Driven every tick by UDeathStateProcessor on client + server
+	// (like HideActorTime). Applied as:
+	//   * SKM (bUseSkeletalMovement == true): a dynamic material instance on the actor's skeletal mesh; the amount
+	//     is written to the scalar parameter "Dissolve".
+	//   * ISM: the pooled instance is swapped to a (same mesh, DissolveMaterial) pool and the amount is written to
+	//     PerInstanceCustomData index 13.
+	// So DissolveMaterial should compute its dissolve mask from  ScalarParam("Dissolve") + PerInstanceCustomData[13]
+	// (only one is ever non-zero for a given unit). Keep DissolveStartTime + DissolveDuration <= HideActorTime so
+	// the fade finishes before the corpse is hidden. Use EITHER ruin OR dissolve on a unit, not both.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mass|Dissolve")
+	TObjectPtr<UMaterialInterface> DissolveMaterial = nullptr;
+
+	// Seconds since death at which the dissolve starts (and the material swap happens). 0 = immediately on death.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mass|Dissolve", meta = (EditCondition = "DissolveMaterial != nullptr"))
+	float DissolveStartTime = 0.f;
+
+	// Seconds over which the dissolve amount ramps 0->1. Must be > 0 for the feature to run.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mass|Dissolve", meta = (EditCondition = "DissolveMaterial != nullptr"))
+	float DissolveDuration = 1.5f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mass")
 	float IsAttackedDuration = 0.3f;
 

@@ -843,6 +843,22 @@ struct FMassAgentCharacteristicsFragment : public FMassFragment
 	UPROPERTY(Transient)
 	bool bRuinApplied = false;
 
+	// --- Optional corpse dissolve (see UMassActorBindingComponent). ---
+	// Seconds since death at which the dissolve starts. Copied from the component.
+	UPROPERTY(EditAnywhere, Category = "Characteristics")
+	float DissolveStartTime = 0.f;
+
+	// Seconds over which the dissolve ramps 0->1. Copied as 0 by MassActorBindingComponent unless a
+	// DissolveMaterial is set AND its duration > 0, so the death processor treats DissolveDuration > 0
+	// as the single "dissolve enabled" test (no material ref needed on the fragment).
+	UPROPERTY(EditAnywhere, Category = "Characteristics")
+	float DissolveDuration = 0.f;
+
+	// Set true once the DissolveMaterial has been applied (SKM dynamic-material created / ISM pool swapped)
+	// for this entity — the one-shot apply guard. The fade amount keeps updating each tick regardless.
+	UPROPERTY(Transient)
+	bool bDissolveApplied = false;
+
 	UPROPERTY(EditAnywhere, Category = "Characteristics")
 	bool RotatesToMovement = true;
 

@@ -27,6 +27,7 @@
 #include "Components/PrimitiveComponent.h"
 #include "Components/ChildActorComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/BoxComponent.h"
 #include "NavigationSystem.h"
 #include "NavMesh/RecastNavMesh.h"
 #include "NavAreas/NavArea_Default.h"
@@ -38,6 +39,7 @@
 #include "GameFramework/PlayerState.h"
 #include "Mass/UnitMassTag.h"
 #include "MassEntitySubsystem.h"
+#include "Mass/Abilitys/CastingFallBackProcessor.h"
 #include "MassCommandBuffer.h"
 #include "MassCommonFragments.h"
 #include "MassNavigationFragments.h"
@@ -2826,6 +2828,15 @@ void AExtendedControllerBase::UpdateExtensionWorkAreaPosition(AWorkArea* Dragged
 		float TraceZOffset = 0.f;
 		bool bPathBlocked = WallTrace(Unit, DraggedWorkArea, TraceStart, TraceEnd, TraceZOffset, TargetBuilding);
 
+		// Preview only: the WorkArea (new-tower) end sits at its GROUND pivot, so the wall/line ends at the
+		// floor there, while the tower end sits at the tower's mid (center pivot). Lift the WorkArea end up
+		// by the initiator tower's capsule half-height so it rises to the tower body instead of the ground.
+		// Does NOT touch the path trace above, which has already run with the original endpoints.
+		if (UCapsuleComponent* PreviewCapsule = Unit->FindComponentByClass<UCapsuleComponent>())
+		{
+			TraceEnd.Z += PreviewCapsule->GetScaledCapsuleHalfHeight();
+		}
+
 		// Visualisierung im HUD via Puffer
 		if (AHUDBase* HUD = Cast<AHUDBase>(GetHUD()))
 		{
@@ -4152,6 +4163,51 @@ void AExtendedControllerBase::Server_SpawnExtensionConstructionUnit_Implementati
 					}
 					NewConstruction->SetActorScale3D(NewScale * 2.f * WA->ScaleConstructionUnit);
 				}
+				else if (Cast<AConstructionUnit>(NewConstruction) && Cast<AConstructionUnit>(NewConstruction)->DroneBehavior && AreaSize.X > KINDA_SMALL_NUMBER && AreaSize.Y > KINDA_SMALL_NUMBER)
+				{
+					if (UCapsuleComponent* Capsule = Cast<AConstructionUnit>(NewConstruction)->GetCapsuleComponent())
+					{
+						const float CapMargin = 0.98f;
+						const float NewRadius = FMath::Max(AreaSize.X, AreaSize.Y) * 0.5f * CapMargin;
+						const float NewHalfHeight = FMath::Max(AreaSize.Z * 0.5f, NewRadius);
+						Capsule->SetCapsuleSize(NewRadius, NewHalfHeight, true);
+					}
+
+					// Impact-VFX surface fix: the resized capsule is a large CIRCLE (radius = half the
+					// WorkArea's LONGEST side). Projecting the projectile impact onto that circle put the VFX
+					// ~100-500u off the actual (thin) wall mesh -- and because the drone's effective capsule
+					// radius (GetScaledCapsuleRadius + AdditionalCapsuleRadius) came out NEGATIVE, the point
+					// even flipped to the FAR side. Fix: give the drone CU a tagged BoxCollision component
+					// matching the WorkArea mesh's ORIENTED bounds. ComputeImpactSurfaceXY then takes the box
+					// branch, which clamps the impact onto the NEAREST wall face (correct side + wall shape).
+					// Server-only is sufficient: the impact is computed server-side (MassProjectileImpactProcessor
+					// -> HandleProjectileImpact is a Server RPC) and the final VFX position is multicast with the
+					// baked location (FireEffectsAtLocation is NetMulticast). NoCollision so it never perturbs
+					// the physics/projectile hit detection -- it's purely a geometry marker for the surface math.
+					AConstructionUnit* DroneCU = Cast<AConstructionUnit>(NewConstruction);
+					if (WA->Mesh)
+					{
+						FVector BoxHalfExtent(FMath::Max(AreaSize.X, 1.f) * 0.5f, FMath::Max(AreaSize.Y, 1.f) * 0.5f, FMath::Max(AreaSize.Z, 1.f) * 0.5f);
+						FVector BoxWorldLoc = WA->Mesh->GetComponentLocation();
+						const FRotator BoxWorldRot = WA->Mesh->GetComponentRotation();
+						if (const UStaticMesh* WASM = WA->Mesh->GetStaticMesh())
+						{
+							const FBoxSphereBounds LocalB = WASM->GetBounds();
+							BoxHalfExtent = LocalB.BoxExtent * WA->Mesh->GetComponentScale();
+							BoxWorldLoc = WA->Mesh->GetComponentTransform().TransformPosition(LocalB.Origin);
+						}
+						if (UBoxComponent* ImpactBox = NewObject<UBoxComponent>(DroneCU))
+						{
+							ImpactBox->RegisterComponent();
+							ImpactBox->AttachToComponent(DroneCU->GetRootComponent(), FAttachmentTransformRules::KeepWorldTransform);
+							ImpactBox->SetBoxExtent(BoxHalfExtent, false);
+							ImpactBox->SetWorldLocationAndRotation(BoxWorldLoc, BoxWorldRot);
+							ImpactBox->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+							ImpactBox->ComponentTags.Add(AUnitBase::BoxCollisionTag);
+							DroneCU->BoxCollisionComponent = ImpactBox;
+						}
+					}
+				}
 
 				// Recenter (was disabled here, making extension sites the one path that never
 				// centered): anchor the VISUAL bounds on the WA actor pivot — the same reference
@@ -4204,7 +4260,31 @@ void AExtendedControllerBase::Server_SpawnExtensionConstructionUnit_Implementati
 			NewConstruction->BuildArea = WA;
 			if (AConstructionUnit* CU = Cast<AConstructionUnit>(NewConstruction))
 			{
+				// The CU's Mass entity may not be bound yet here (esp. on a ListenServer), so
+				// SwitchEntityTagByState below can no-op; set the persistent state so the post-binding
+				// UnitSpawned handler (UnitClientTagSyncProcessor) applies Casting once the entity is valid.
+				CU->UnitState = UnitData::Casting;
+				CU->UnitStatePlaceholder = UnitData::Idle;
+				CU->StoredUnitState = UnitData::Casting;
 				CU->SwitchEntityTagByState(UnitData::Casting, UnitData::Idle);
+
+				// Extension builds are driven by THIS ConstructionUnit sitting in Casting (not via a GAS
+				// ability), so it never receives the casting-watchdog tag the GAS path adds. Give it
+				// FMassCastingFallbackTag so UCastingFallBackProcessor re-forces Casting each tick until the
+				// cast completes (the processor self-removes the tag near completion), so the server "initial
+				// kick" (Batch_KickUnits) stripping FMassStateCastingTag can't lock the site into Idle before
+				// the cast finishes. Scoped to this path: server authority, extension WorkArea, CU-driven.
+				if (CU->MassActorBindingComponent)
+				{
+					const FMassEntityHandle CUEntity = CU->MassActorBindingComponent->GetMassEntityHandle();
+					if (CUEntity.IsValid())
+					{
+						if (UMassEntitySubsystem* MassSubsystem = GetWorld()->GetSubsystem<UMassEntitySubsystem>())
+						{
+							MassSubsystem->GetMutableEntityManager().Defer().AddTag<FMassCastingFallbackTag>(CUEntity);
+						}
+					}
+				}
 				UE_LOG(LogTemp, Warning, TEXT("[JUNIE] Spawned ConstructionUnit %s, DroneBehavior=%d"), *CU->GetName(), (int)CU->DroneBehavior);
 			}
 			

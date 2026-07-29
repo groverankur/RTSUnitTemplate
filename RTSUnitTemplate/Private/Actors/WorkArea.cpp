@@ -183,6 +183,13 @@ void AWorkArea::Tick(float DeltaTime)
 		Building = nullptr;
 	}
 
+	// If our construction unit (e.g. the extension build drone) was killed mid-build, tear the site down too.
+	if (ConstructionUnit && ConstructionUnit->GetUnitState() == UnitData::Dead)
+	{
+		Destroy();
+		return;
+	}
+
 	
 	ControlTimer += DeltaTime;
 	if(ControlTimer >= ResetStartBuildTime)

@@ -1155,6 +1155,12 @@ void UMassActorBindingComponent::InitializeMassEntityStatsFromOwner(FMassEntityM
     			: 0.f;
     	}
     	CharFrag->bRuinApplied = false;
+    	// Corpse dissolve. Copy DissolveDuration as 0 unless a DissolveMaterial is set AND the duration is
+    	// positive, so the death processor's "DissolveDuration > 0" test alone gates the whole feature (the
+    	// material stays on the component and is read in the handler, like RuinMaterialOverride).
+    	CharFrag->DissolveStartTime = FMath::Max(0.f, DissolveStartTime);
+    	CharFrag->DissolveDuration  = (DissolveMaterial && DissolveDuration > KINDA_SMALL_NUMBER) ? DissolveDuration : 0.f;
+    	CharFrag->bDissolveApplied  = false;
     	CharFrag->CanManipulateNavMesh = CanManipulateNavMesh;
     	CharFrag->RotatesToMovement = RotatesToMovement;
     	CharFrag->RotatesToEnemy = RotatesToEnemy;

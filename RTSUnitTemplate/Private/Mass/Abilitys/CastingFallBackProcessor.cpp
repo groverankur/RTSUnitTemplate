@@ -25,6 +25,7 @@ void UCastingFallBackProcessor::ConfigureQueries(const TSharedRef<FMassEntityMan
     EntityQuery.AddRequirement<FMassCombatStatsFragment>(EMassFragmentAccess::ReadOnly);
     EntityQuery.AddRequirement<FMassActorFragment>(EMassFragmentAccess::ReadOnly);
     EntityQuery.AddTagRequirement<FMassIsEffectAreaTag>(EMassFragmentPresence::None);
+    EntityQuery.AddTagRequirement<FMassStateDeadTag>(EMassFragmentPresence::None);
     // Sicherstellen, dass die Query registriert wird
     EntityQuery.RegisterWithProcessor(*this); 
 }

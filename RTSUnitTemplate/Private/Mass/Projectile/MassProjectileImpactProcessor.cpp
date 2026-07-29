@@ -264,7 +264,13 @@ void UMassProjectileImpactProcessor::Execute(FMassEntityManager& EntityManager, 
 
 									if (AUnitBase* TargetUnit = Cast<AUnitBase>(TargetActor))
 									{
-										FVector PreciseImpactPos = FCollisionUtils::ComputeImpactSurfaceXY(ShooterActor, TargetActor, ProjPos);
+										// Use the SHOOTER position (not the current projectile position) as the incoming direction so the
+										// impact surface lands on the side FACING the shooter. ProjPos can overshoot PAST the target center
+										// for large targets — e.g. the WorkArea-sized capsule/box of the extension ConstructionUnit — which
+										// flips the surface to the FAR side (VFX on the opposite side). Fall back to ProjPos only if no shooter.
+										FVector PreciseImpactPos = ShooterActor
+											? FCollisionUtils::ComputeImpactSurfaceXY(ShooterActor, TargetActor)
+											: FCollisionUtils::ComputeImpactSurfaceXY(ShooterActor, TargetActor, ProjPos);
 										
 										// If target is flying, ensure impact VFX stay at projectile height
 										if (UnitCharFrags[j].bIsFlying)
@@ -287,7 +293,13 @@ void UMassProjectileImpactProcessor::Execute(FMassEntityManager& EntityManager, 
 									}
 									else if (AEffectArea* EffectArea = Cast<AEffectArea>(TargetActor))
 									{
-										FVector PreciseImpactPos = FCollisionUtils::ComputeImpactSurfaceXY(ShooterActor, TargetActor, ProjPos);
+										// Use the SHOOTER position (not the current projectile position) as the incoming direction so the
+										// impact surface lands on the side FACING the shooter. ProjPos can overshoot PAST the target center
+										// for large targets — e.g. the WorkArea-sized capsule/box of the extension ConstructionUnit — which
+										// flips the surface to the FAR side (VFX on the opposite side). Fall back to ProjPos only if no shooter.
+										FVector PreciseImpactPos = ShooterActor
+											? FCollisionUtils::ComputeImpactSurfaceXY(ShooterActor, TargetActor)
+											: FCollisionUtils::ComputeImpactSurfaceXY(ShooterActor, TargetActor, ProjPos);
 										
 										// If target is flying, ensure impact VFX stay at projectile height
 										if (UnitCharFrags[j].bIsFlying)

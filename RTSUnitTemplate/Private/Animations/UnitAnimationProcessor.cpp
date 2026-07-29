@@ -14,11 +14,13 @@
 
 // All ISM animation custom data lives in indices 1..12 (see the *CustomDataIndex members in
 // UnitAnimationProcessor.h), so every animated ISM needs at least this many custom-data floats.
-// The ISM is pre-sized to this ONCE at creation (UUnitVisualManager::GetOrCreateISM /
+// The ISM is pre-sized ONCE at creation (UUnitVisualManager::GetOrCreateISM /
 // UUnitVisualManager::AssignUnitVisual / the AMassUnitBase constructor) and is NEVER resized here:
 // on a pooled/shared ISM, SetNumCustomDataFloats reallocates and zero-fills the custom data of
 // EVERY instance, which would wipe other units' animation state mid-play.
-// NOTE: if you change any *CustomDataIndex value, update this constant and those three creation sites.
+// NOTE: the three creation sites size to 14 floats — indices 1..12 animation + index 13 corpse-dissolve
+// (UUnitVisualManager::SetUnitDissolve). This constant is only the animation MINIMUM (the guard below is
+// >=), so it stays 13; if you change any *CustomDataIndex value, update this constant and those sites.
 static constexpr int32 RequiredCustomDataFloats = 13;
 
 // Returns the row matching State; if none exists, falls back to the Idle row; nullptr if neither is

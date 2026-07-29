@@ -39,6 +39,9 @@ protected:
 	UFUNCTION()
 	void HandleSwitchToRuin(FName SignalName, TArray<FMassEntityHandle>& Entities);
 
+	UFUNCTION()
+	void HandleUpdateDissolve(FName SignalName, TArray<FMassEntityHandle>& Entities);
+
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = RTSUnitTemplate)
 	float ExecutionInterval = 0.1f;
 	
@@ -58,4 +61,6 @@ private:
 	FDelegateHandle HideUnitSignalDelegateHandle;
 
 	FDelegateHandle SwitchToRuinSignalDelegateHandle;
+
+	FDelegateHandle UpdateDissolveSignalDelegateHandle;
 };

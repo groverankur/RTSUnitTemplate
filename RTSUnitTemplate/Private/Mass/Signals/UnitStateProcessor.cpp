@@ -3829,31 +3829,27 @@ bool UUnitStateProcessor::HandleExtensionCastForConstructionUnit(FMassEntityMana
 	{
 		const float MaxHP = Construction->Attributes->GetMaxHealth();
 		const float MaxShield = Construction->Attributes->GetMaxShield();
-		float PreviousProgress = WA ? WA->LastAppliedBuildProgress : 0.f;
-		const float CurrentHealth = Construction->Attributes->GetHealth();
-		const float CurrentShield = Construction->Attributes->GetShield();
-		
-		// If LastAppliedBuildProgress is still 0 but health is already significant,
-		// initialize it from health to prevent a progress "jump" on the first sync.
-		if (WA && PreviousProgress <= 0.f && MaxHP > KINDA_SMALL_NUMBER)
+		// FIRST sync (LastAppliedBuildProgress <= 0): SET health/shield to the progress fraction so a CU that
+		// spawned at FULL health (the target building's DefaultAttributeEffect) drops to the correct low start
+		// value instead of the additive ramp seeing full health and adding nothing. AFTER that use the ADDITIVE
+		// step so damage taken during construction is preserved.
+		const float PreviousProgress = WA ? WA->LastAppliedBuildProgress : 0.f;
+		if (PreviousProgress <= 0.f)
 		{
-			PreviousProgress = FMath::Clamp(CurrentHealth / MaxHP, 0.f, 1.f);
-			WA->LastAppliedBuildProgress = PreviousProgress;
-		}
-		
-		const float StepProgress = FMath::Max(0.f, Progress - PreviousProgress);
-		if (StepProgress > 0.f)
-		{
-			const float StepHealth = MaxHP * StepProgress;
-			const float NewHealth = FMath::Clamp(CurrentHealth + StepHealth, 0.f, MaxHP);
-			Construction->SetHealth(NewHealth);
-			const float StepShield = MaxShield * StepProgress;
-			const float NewShield = FMath::Clamp(CurrentShield + StepShield, 0.f, MaxShield);
-			Construction->SetShield(NewShield);
+			Construction->SetHealth(MaxHP * FMath::Max(Progress, 0.05f));
+			Construction->SetShield(MaxShield * FMath::Max(Progress, 0.05f));
 			Construction->UpdateWidget();
-			if (WA)
+			if (WA) { WA->LastAppliedBuildProgress = FMath::Max(Progress, 0.05f); }
+		}
+		else
+		{
+			const float StepProgress = FMath::Max(0.f, Progress - PreviousProgress);
+			if (StepProgress > 0.f)
 			{
-				WA->LastAppliedBuildProgress = Progress;
+				Construction->SetHealth(FMath::Clamp(Construction->Attributes->GetHealth() + MaxHP * StepProgress, 0.f, MaxHP));
+				Construction->SetShield(FMath::Clamp(Construction->Attributes->GetShield() + MaxShield * StepProgress, 0.f, MaxShield));
+				Construction->UpdateWidget();
+				if (WA) { WA->LastAppliedBuildProgress = Progress; }
 			}
 		}
 	}

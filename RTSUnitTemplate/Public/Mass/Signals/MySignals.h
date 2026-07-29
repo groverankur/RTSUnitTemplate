@@ -42,6 +42,7 @@ namespace UnitSignals
 	const FName RemoveDeadUnit(TEXT("RemoveDeadUnit"));
 	const FName HideUnit(TEXT("HideUnit"));
 	const FName SwitchToRuin(TEXT("SwitchToRuin"));
+	const FName UpdateDissolve(TEXT("UpdateDissolve"));
 	const FName PISwitcher(TEXT("PISwitcher"));
 
 	const FName SetUnitStatePlaceholder(TEXT("IdlePatrolSwitcher"));

@@ -1868,6 +1868,12 @@ AUnitBase* ACustomControllerBase::GetUnitFromHitResult(const FHitResult& Hit) co
 		}
 	}
 
+	// Build sites: hitting a WorkArea resolves to its construction unit, so attack/focus/follow act on it.
+	if (AWorkArea* WorkArea = Cast<AWorkArea>(HitActor))
+	{
+		return WorkArea->ConstructionUnit;
+	}
+
 	return nullptr;
 }
 

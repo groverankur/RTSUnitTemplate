@@ -179,7 +179,9 @@ FVector FCollisionUtils::ComputeImpactSurfaceXY(const AActor* Attacker, const AA
         }
 
         Dir2D.Normalize();
-        Surface = TargetCenter - Dir2D * Radius2D;
+        // Point on the capsule surface FACING the incoming location (near side, toward the shooter/projectile
+        // approach). Computed explicitly from (Incoming - Center) so the side can't be flipped by Dir2D's sign.
+        Surface = TargetCenter + (IncomingLoc - TargetCenter).GetSafeNormal2D() * Radius2D;
     }
 
     // Keep Z-axis height logic (bTargetFlying, bAttackerFlying)

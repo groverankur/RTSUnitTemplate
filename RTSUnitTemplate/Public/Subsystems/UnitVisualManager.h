@@ -29,6 +29,12 @@ public:
 
 	void SetUnitVisualVisible(FMassEntityHandle Entity, bool bVisible);
 
+	// Corpse-dissolve: write the dissolve amount (0..1) into PerInstanceCustomData index 13 on every pooled
+	// visual instance of this entity. Called each tick by UDeathStateProcessor AFTER the instance has been
+	// swapped to a DissolveMaterial-keyed pool (via SwapUnitVisualToRuin with the unit's own mesh). No-op on
+	// instances whose ISM isn't sized for index 13.
+	void SetUnitDissolve(FMassEntityHandle Entity, float Alpha);
+
 	// Swap this entity's pooled ISM visual(s) to a single "ruin" instance: releases the current visual
 	// instances back to the pool, allocates one pooled instance for RuinMesh, and places it fitted to the
 	// original building mesh's world bounds (auto-fit, then per-mesh StretchFactor), ground-seated, with

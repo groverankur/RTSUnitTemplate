@@ -23,6 +23,9 @@
 #include "Characters/Unit/MassUnitBase.h"
 #include "Mass/MassActorBindingComponent.h"
 #include "Hud/HUDBase.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
 
 UDeathStateProcessor::UDeathStateProcessor(): EntityQuery()
 {
@@ -60,6 +63,9 @@ void UDeathStateProcessor::InitializeInternal(UObject& Owner, const TSharedRef<F
 
         SwitchToRuinSignalDelegateHandle = SignalSubsystem->GetSignalDelegateByName(UnitSignals::SwitchToRuin)
             .AddUFunction(this, GET_FUNCTION_NAME_CHECKED(UDeathStateProcessor, HandleSwitchToRuin));
+
+        UpdateDissolveSignalDelegateHandle = SignalSubsystem->GetSignalDelegateByName(UnitSignals::UpdateDissolve)
+            .AddUFunction(this, GET_FUNCTION_NAME_CHECKED(UDeathStateProcessor, HandleUpdateDissolve));
     }
 }
 
@@ -86,6 +92,13 @@ void UDeathStateProcessor::BeginDestroy()
             auto& Delegate = SignalSubsystem->GetSignalDelegateByName(UnitSignals::SwitchToRuin);
             Delegate.Remove(SwitchToRuinSignalDelegateHandle);
             SwitchToRuinSignalDelegateHandle.Reset();
+        }
+
+        if (UpdateDissolveSignalDelegateHandle.IsValid())
+        {
+            auto& Delegate = SignalSubsystem->GetSignalDelegateByName(UnitSignals::UpdateDissolve);
+            Delegate.Remove(UpdateDissolveSignalDelegateHandle);
+            UpdateDissolveSignalDelegateHandle.Reset();
         }
     }
     Super::BeginDestroy();
@@ -264,6 +277,89 @@ void UDeathStateProcessor::HandleSwitchToRuin(FName SignalName, TArray<FMassEnti
     });
 }
 
+void UDeathStateProcessor::HandleUpdateDissolve(FName SignalName, TArray<FMassEntityHandle>& Entities)
+{
+    if (!EntitySubsystem) return;
+
+    TArray<FMassEntityHandle> EntitiesCopy = Entities;
+
+    AsyncTask(ENamedThreads::GameThread, [this, EntitiesCopy]()
+    {
+        if (!EntitySubsystem || !GetWorld()) return;
+
+        UUnitVisualManager* VisualManager = GetWorld()->GetSubsystem<UUnitVisualManager>();
+
+        FMassEntityManager& EntityManager = EntitySubsystem->GetMutableEntityManager();
+        for (const FMassEntityHandle& Entity : EntitiesCopy)
+        {
+            if (!EntityManager.IsEntityActive(Entity)) continue;
+
+            FMassAgentCharacteristicsFragment* CharFrag = EntityManager.GetFragmentDataPtr<FMassAgentCharacteristicsFragment>(Entity);
+            if (!CharFrag || CharFrag->DissolveDuration <= KINDA_SMALL_NUMBER) continue; // feature disabled
+
+            FMassActorFragment* ActorFragPtr = EntityManager.GetFragmentDataPtr<FMassActorFragment>(Entity);
+            AMassUnitBase* Unit = ActorFragPtr ? Cast<AMassUnitBase>(ActorFragPtr->GetMutable()) : nullptr;
+            if (!Unit) continue;
+
+            UMassActorBindingComponent* Binding = Unit->MassActorBindingComponent;
+            if (!Binding || !Binding->DissolveMaterial)
+            {
+                CharFrag->bDissolveApplied = true; // nothing to apply — don't keep retrying the swap
+                continue;
+            }
+
+            // Fade amount 0..1 from time since death (StateTimer). Clamped so it holds at 1 after the window.
+            const FMassAIStateFragment* StateFrag = EntityManager.GetFragmentDataPtr<FMassAIStateFragment>(Entity);
+            const float TimeSinceDeath = StateFrag ? StateFrag->StateTimer : 0.f;
+            const float Alpha = FMath::Clamp(
+                (TimeSinceDeath - CharFrag->DissolveStartTime) / FMath::Max(CharFrag->DissolveDuration, KINDA_SMALL_NUMBER),
+                0.f, 1.f);
+
+            if (Unit->bUseSkeletalMovement)
+            {
+                // SKM: swap the skeletal mesh's materials to dynamic instances of DissolveMaterial (once)
+                // and drive the fade through the scalar parameter "Dissolve" each tick.
+                USkeletalMeshComponent* Mesh = Unit->GetMesh();
+                if (!Mesh) { CharFrag->bDissolveApplied = true; continue; }
+
+                const int32 NumMats = Mesh->GetNumMaterials();
+                for (int32 Slot = 0; Slot < NumMats; ++Slot)
+                {
+                    UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(Mesh->GetMaterial(Slot));
+                    if (!MID || MID->Parent != Binding->DissolveMaterial)
+                    {
+                        MID = Mesh->CreateDynamicMaterialInstance(Slot, Binding->DissolveMaterial);
+                    }
+                    if (MID)
+                    {
+                        MID->SetScalarParameterValue(TEXT("Dissolve"), Alpha);
+                    }
+                }
+                CharFrag->bDissolveApplied = true;
+            }
+            else if (VisualManager)
+            {
+                // ISM: one-shot swap the pooled instance to a (same mesh, DissolveMaterial) pool — reuses the
+                // ruin swap with the unit's OWN mesh + unit scale (StretchFactor 1), so it reproduces the unit
+                // ground-seated at its world size — then ramp the fade via PerInstanceCustomData index 13.
+                if (!CharFrag->bDissolveApplied)
+                {
+                    UStaticMesh* CurrentMesh = Unit->ISMComponent ? Unit->ISMComponent->GetStaticMesh() : nullptr;
+                    if (!CurrentMesh) { CharFrag->bDissolveApplied = true; continue; }
+
+                    const bool bCastShadow = Unit->ISMComponent ? Unit->ISMComponent->CastShadow : true;
+                    const float YawDegrees = Unit->GetActorRotation().Yaw;
+                    VisualManager->SwapUnitVisualToRuin(
+                        Entity, Unit, CurrentMesh, Binding->DissolveMaterial,
+                        bCastShadow, FVector(1.f, 1.f, 1.f), YawDegrees);
+                    CharFrag->bDissolveApplied = true;
+                }
+                VisualManager->SetUnitDissolve(Entity, Alpha);
+            }
+        }
+    });
+}
+
 void UDeathStateProcessor::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
     TimeSinceLastRun += Context.GetDeltaTimeSeconds();
@@ -333,6 +429,16 @@ void UDeathStateProcessor::ExecuteClient(FMassEntityManager& EntityManager, FMas
             {
                 SignalSubsystem->SignalEntityDeferred(ChunkContext, UnitSignals::SwitchToRuin, Entity);
             }
+
+            // Corpse dissolve (optional; SKM + ISM). Level-triggered every tick across the fade window so the
+            // handler applies the DissolveMaterial once and advances the fade each tick. Fired on client AND
+            // server (the handler runs on both). DissolveDuration is 0 unless a DissolveMaterial is set.
+            if (CharacteristicsFragment.DissolveDuration > KINDA_SMALL_NUMBER &&
+                StateFrag.StateTimer >= CharacteristicsFragment.DissolveStartTime &&
+                StateFrag.StateTimer <= CharacteristicsFragment.DissolveStartTime + CharacteristicsFragment.DissolveDuration + ExecutionInterval)
+            {
+                SignalSubsystem->SignalEntityDeferred(ChunkContext, UnitSignals::UpdateDissolve, Entity);
+            }
         }
     });
 }
@@ -384,6 +490,16 @@ void UDeathStateProcessor::ExecuteServer(FMassEntityManager& EntityManager, FMas
                 StateFrag.StateTimer >= CharacteristicsFragment.SwitchToRuinMeshTime)
             {
                 SignalSubsystem->SignalEntityDeferred(ChunkContext, UnitSignals::SwitchToRuin, Entity);
+            }
+
+            // Corpse dissolve (optional; SKM + ISM). Level-triggered every tick across the fade window so the
+            // handler applies the DissolveMaterial once and advances the fade each tick. Fired on server AND
+            // client (the handler runs on both). DissolveDuration is 0 unless a DissolveMaterial is set.
+            if (CharacteristicsFragment.DissolveDuration > KINDA_SMALL_NUMBER &&
+                StateFrag.StateTimer >= CharacteristicsFragment.DissolveStartTime &&
+                StateFrag.StateTimer <= CharacteristicsFragment.DissolveStartTime + CharacteristicsFragment.DissolveDuration + ExecutionInterval)
+            {
+                SignalSubsystem->SignalEntityDeferred(ChunkContext, UnitSignals::UpdateDissolve, Entity);
             }
 
             if (StateFrag.StateTimer >= CharacteristicsFragment.DespawnTime+1.f)
